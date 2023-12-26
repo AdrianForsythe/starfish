@@ -677,7 +677,7 @@ sub Refine_element_boundaries {
 				next if (-z $idFile);
 				
 				# create db alias with all of the IDs of empty contigs that are to be searched to speed up search
-				my ($alias_check) = system("blastdb_aliastool -seqid_file_in $idFile -seqid_file_out $idFile.alias");
+				my ($alias_check) = system("blastdb_aliastool -gi_file_in $idFile -gi_file_out $idFile.alias");
 				my $datestring = localtime();					
 				if ($alias_check != 0) { die "\n\n[$datestring] error: could not execute blastdb_aliastool for captain $capID and $idFile on commandline, exiting..\n$!\n";}
 
@@ -1204,7 +1204,7 @@ sub Empty_downstream_search {
 				sleep(1);
 				
 				# create db alias to optimize up search
-				my ($alias_check) = system("blastdb_aliastool -seqid_file_in $idFile -seqid_file_out $idFile.alias");
+				my ($alias_check) = system("blastdb_aliastool -gi_file_in $idFile -gi_file_out $idFile.alias");
 				my $datestring = localtime();					
 				if ($alias_check != 0) { 
 					print "[$datestring] error: could not execute blastdb_aliastool for captain $capID empty downstream search on commandline, skipping\n";
@@ -1454,7 +1454,7 @@ sub Element_upstream_search {
 					}
 				
 					# create db alias with all of the IDs of empty contigs that are to be searched to speed up search
-					my ($alias_check) = system("blastdb_aliastool -seqid_file_in $idFile -seqid_file_out $idFile.alias");
+					my ($alias_check) = system("blastdb_aliastool -gi_file_in $idFile -gi_file_out $idFile.alias");
 					my $datestring = localtime();					
 					if ($alias_check != 0) { die "\n\n[$datestring] error: could not execute blastdb_aliastool for captain $capID and $idFile on commandline, exiting..\n$!\n";}
 				

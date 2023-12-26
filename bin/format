@@ -10,6 +10,12 @@ $|=1;
 # glofish lib
 use Fishtank::Utils qw(Fasta_hash_nospace dim_1_hash Open_FH Format_check_fasta Format_check_gff Format_name);
 
+# TODO: check that headers in fasta and gff match (in my wrapper script I had forced a reheader of all files just to be safe)
+# TODO: add steps to guess at what the --separator and --nameField are, if these options are not included at the start of a run
+
+# TODO: concatenate all formatted gff3 files into a single file before running
+# TODO: concatenate all formatted assembly files and make a blastn database
+
 sub usage {
 	my $message = shift;
 	my $usage = qq/
@@ -47,10 +53,72 @@ main: {
 	GetOptions(\%opts, 
 		'fasta|f=s@',
 		'gff|g=s',
+		'out_dir|o=s',
+		'taxa_name|t=s',
+		'run_name|r=s',
 		'separator|s=s',
 		'nameField|namefield|n=s',
+		'force|x',
 		'h|help');
 	Opts_check(\%opts);
+
+	#########################
+	#### ORGANIZE FILES  ####
+	#########################
+	# TODO: handle input from assemblies.txt and gffs.txt
+	# TODO: add routines for when gffs.txt is not supplied
+	my $GENOME_DIR = $opts{'out_dir'}/tmp
+	# Check if directory exists
+	# if it does not exist, create it
+	# if it does, clean up when -f
+	find(sub { unlink if /.*\.header.*|.*\.starfish_format.*/ }, $GENOME_DIR);
+	if (-d $GENOME_DIR) {
+		if ($opts{'force'}) {
+			rmtree("blastdb") if -d "blastdb";
+		} else {
+			die("\nError: starfish output already exists, use --force/-x to overwrite\n")
+		}
+	} else {
+		mkdir -p $GENOME_DIR or die "Could not create directory $opts{'out_dir'}: $!";
+	}
+
+	# make sure dir names don't contain '_'
+	find(sub { if (m/_/) { s/_//g; rename $_, $_; } }, $GENOME_DIR);
+
+	#####
+
+	# Create .txt files detailing the absolute path to each genome's gff3 and assembly
+	my @files = qw(assemblies.txt gffs.txt);
+	my @extensions = qw(.header.fna .header.gff3);
+
+	for my $i (0..1) {
+			open my $fh, '>', $files[$i] or die "Could not open file $files[$i]: $!";
+			find(sub {
+					if (-f and /$extensions[$i]$/) {
+							print $fh File::Spec->rel2abs($File::Find::name), "\n";
+					}
+			}, $GENOME_DIR);
+			close $fh;
+	}
+
+	# Add columns containing genome code
+	open my $fh, '<', $files[0] or die "Could not open file $files[0]: $!";
+	my @lines = <$fh>;
+	close $fh;
+	open my $out, '>', 'genome-codes.txt' or die "Could not open file genome-codes.txt: $!";
+	print $out join("\n", map { my ($dir) = splitdir($_); $dir =~ s/_//g; $_; } @lines);
+	close $out;
+
+	# Format assemblies.txt and gffs.txt
+	for my $i (0..1) {
+			open my $fh, '<', $files[$i] or die "Could not open file $files[$i]: $!";
+			my @lines = <$fh>;
+			close $fh;
+			open my $out, '>', "${files[$i]}.temp" or die "Could not open file ${files[$i]}.temp: $!";
+			print $out join("\n", map { my ($code, $path) = split(/\t/, $_); "$code\t$path"; } @lines);
+			close $out;
+			move("${files[$i]}.temp", $files[$i]) or die "Could not move file ${files[$i]}.temp to $files[$i]: $!";
+	}
 
 	#########################
 	#### REFORMAT FASTAS ####
@@ -61,6 +129,7 @@ main: {
 		my $datestring = localtime();
 		print "[$datestring] reformatting fasta headers..\n";
 
+		# ? hashs are not concatenated here
 		foreach my $fastaFilePath (@{$opts{'fasta'}}) {
 			my ($fastaFiles) = dim_1_hash($fastaFilePath, "\t", "0:1");
 			foreach my $genomeID (keys %{$fastaFiles}) {
@@ -69,6 +138,29 @@ main: {
 		}
 	} 
 	
+					my $GFF = "$GENOME_DIR/$header_squished/*.gff3";
+					if (-e $GFF) {
+							open my $fh, '<', $GFF or die "Could not open file $GFF: $!";
+							my @lines = <$fh>;
+							close $fh;
+							if (grep(/^${header}|^$header_squished/, @lines)) {
+									open my $out, '>', "${GFF}.header.gff3" or die "Could not open file ${GFF}.header.gff3: $!";
+									print $out join('', map { s/^/${header_squished}_/; s/jgi.p|Paevar1|//g; s/jgi.p|Paevar_HGY_1|//g; $_ } @lines);
+									close $out;
+							} else {
+									copy($GFF, "${GFF}.header.gff3") or die "Could not copy file $GFF to ${GFF}.header.gff3: $!";
+							}
+					}
+			}
+	}, $GENOME_DIR);
+
+	# Concatenate all assembly files and make a blastn database
+	rmtree("blastdb") if -d "blastdb";
+	mkdir("blastdb") or die "Could not create directory blastdb: $!";
+	system("sed -i 's/.fna/.starfish_format.fna/g' assemblies.txt") == 0 or die "system sed failed: $?";
+	system("sed -i 's/.gff3/.starfish_format.gff3/g' gffs.txt") == 0 or die "system sed failed: $?";
+	open my $out, '>', "blastdb/$species.assemblies.fna" or die "Could not open file blastdb/$species.assemblies.fna: $!";
+
 	#######################
 	#### REFORMAT GFFS ####
 	#######################
@@ -87,6 +179,18 @@ main: {
 	my $datestring = localtime();
 	print "[$datestring] done\n";
 }
+
+	# Concatenate all gff3 files into a single file (a useful shortcut for some analyses)
+	open my $out, '>', "$BASEDIR/$species.gff3" or die "Could not open file $BASEDIR/$species.gff3: $!";
+	find(sub {
+			if (-f and /starfish_format.gff3$/) {
+					open my $fh, '<', $File::Find::name or die "Could not open file $File::Find::name: $!";
+					print $out while <$fh>;
+					close $fh;
+			}
+	}, $GENOME_DIR);
+	close $out;
+
 
 sub Format_fasta {
 	my ($genomeID, $fastaFile, $SEP) = @_;
