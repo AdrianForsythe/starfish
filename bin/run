@@ -1,0 +1,113 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use File::Find;
+use File::Basename;
+use File::Copy;
+use File::Spec;
+use File::Path qw(make_path);
+use Cwd qw(abs_path);
+
+# TODO: after all prep work is done, run through a full starfish annotation pipeline for the specfied gene model...
+
+sub usage {
+	my $message = shift;
+	my $usage = qq/
+usage: starfish run [args]
+
+Run the full starfish annotation pipeline for a given gene model.
+
+At least one of the following:
+-f, --fasta       FILE   2 column tsv: genomeID, path to fasta file to format.
+                         (can specify multiple times)
+-g, --gff         FILE   2 column tsv: genomeID, path to gff3 file to format.
+
+Required, with defaults:
+-o, --out_dir     STR    directory to store output
+-s, --separator   STR    character separating genomeID from featureID.
+                         (default: '_')
+-n, --nameField   STR    GFF3 attribute field where gene features are named.
+                         (default: 'Name=')
+
+Optional:
+-t, --taxa_name   STR    name of taxonomic group for genomes in this starfish run.
+-r, --run_name    STR    name of starfish run.
+-p, --proteoms    FILE   2 column tsv: genomeID, path to proteoms
+-l, --liftover           If included, gff3 files will be created through liftover
+                         annotation using Liftoff
+-i, --refID       STR    The genomeID of the assembly to use as a reference for 
+                         liftover annotations. If a gff3 for this assembly does 
+                         not exist, it will be downloaded.
+-x, --force              force overwriting of starfish results
+-h, --help               print more details and exit.
+
+/;
+	if (not defined $message) {
+		$message = $usage;
+	} else {
+		$message = "$message\nuse -h for more details\n\n" ;
+	}	
+	die($message);
+}
+
+# set defauls
+my $run_name = 'starfishRun';
+
+main: {
+
+	# parse and check options
+	my %opts;
+	GetOptions(\%opts, 
+		'fasta|f=s@',
+		'gff|g=s',
+        'taxa_name|t=s',
+        'run_name|r=s',
+        'proteoms|p=s',
+        'liftover|l',
+        'refID|i=s',
+		'out_dir|o=s',
+		'taxa_name|t=s',
+		'run_name|r=s',
+		'separator|s=s',
+		'nameField|namefield|n=s',
+		'force|x',
+		'h|help');
+	Opts_check(\%opts);
+
+# TODO: add steps for organising output and a temp dir for holding formatted fasta/gffs
+
+# Format gffs to starfish format
+system("starfish format -f assemblies.txt -g gffs.txt -s '_' --nameField 'ID='") == 0 or die "system starfish format failed: $?";
+
+# calculate %GC content across all genomes (useful for visualizing elements later):
+system("scripts/seq-gc.sh -Nbw 1000 blastdb/"$run_name".assemblies.fna > "$run_name".assemblies.gcContent_w1000.bed" or die "system scripts/seq-gc.sh : $?")
+
+# if proteoms.txt is not supplied and gffs.txt is, run emapper
+if (not defined $opts->{'proteoms'}) {
+    if (defined $opts->{'liftover'} && defined $opts->{'refID'}) {
+        my %all_fastahashes;
+        foreach my $fastaFilePath (@{$opts{'fasta'}}) {
+            my %hash = dim_1_hash($fastaFilePath, "\t", "0:1");
+            %all_fastahashes = (%all_fastahashes, %hash);
+        }
+        # Check if any of the keys of the hash match the string
+        if (exists $all_fastahashes{$opts{'refID'}}) {
+            # If the key exists, use it in liftover
+            $all_fastahashes{$opts{'refID'}}
+        } else {
+            # otherwise, it must be a NCBI accession
+            # check if str looks like an NCBI accession
+        }
+
+    } else {
+
+    }
+    if (not defined $opts->{'gff'}) {
+
+            if ($opts{'refID'})
+            # run liftover
+        }
+    }
+    # run emapper
+    system("starfish emapper")
+}

@@ -1,0 +1,16 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use File::Find;
+use File::Basename;
+use File::Copy;
+use File::Spec;
+use File::Path qw(make_path);
+use Cwd qw(abs_path);
+
+# TODO: will accept a proteoms.txt as input
+# TODO: if proteoms.txt not supplied, then cds sequences are generated from gffs
+# TODO: run emapper for each assembly with input
+
+# TODO: after emapper formats and filters gene2og.txt and gene2og.mcl
+# TODO: at the end, create a `proteoms.txt` so that `emapper` doesn't have to be rerun unless `force` is specified
