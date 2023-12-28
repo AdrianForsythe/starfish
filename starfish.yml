@@ -4,6 +4,7 @@ channels:
   - bioconda
   - defaults
 dependencies:
+  - gxx_linux-64
   - mummer4=4.0.0
   - bedtools=2.30.0
   - sourmash=4.6.1
@@ -16,3 +17,4 @@ dependencies:
   - mafft=7.508
   - mmseqs2=14.7e284
   - samtools=1.6
+  - eggnog-mapper=2.1.12
