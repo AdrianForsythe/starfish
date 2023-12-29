@@ -49,6 +49,8 @@ Additional commands:
    format-ncbi        format ncbi assemblies and assign genomeIDs.
    dereplicate-hood   situate neighborhoods in genomic regions using
                       flanking orthologs.
+	 liftover						Liftover annotations from a reference genome (downloads genome from NCBI) 
+	 										in order to annotate assemblies that do not have GFFs provided
 
 To learn more about a command, type starfish <command> -h
 
@@ -153,13 +155,17 @@ main: {
 		usage("\n[$datestring] error: the \'dereplicate-hood\' script should be located in $starfishDIR/main/, but it\'s not..\n") if (! -f "$starfishDIR/main/dereplicate-hood");
 		print "[$datestring] executing command: starfish dereplicate-hood $ARGS\n";
 		system("perl -I $starfishLIB $starfishDIR/main/dereplicate-hood $ARGS");
-	} 
+		} elsif ($COMMAND eq 'liftover') {
+		usage("\n[$datestring] error: the \'liftover\' script should be located in $starfishDIR/main/, but it\'s not..\n") if (! -f "$starfishDIR/main/liftover");
+		print "[$datestring] executing command: starfish liftover $ARGS\n";
+		system("perl -I $starfishLIB $starfishDIR/main/liftover $ARGS");
+		} 
 }
 
 sub Opts_check {
 	my ($COMMAND) = @_;
 	usage() if (not defined $COMMAND);
 	usage() if ($COMMAND =~ m/^help$|^-h$|^--help$/);
-	usage("\nError: please specify a valid command\n") if ($COMMAND !~ m/^sim$|^group$|^dereplicate$|^flank$|^extend$|^summarize$|^insert$|^cargo$|^pair-viz$|^locus-viz$|^coverage$|^genome-viz$|^format$|^format-ncbi$|^annotate$|^consolidate$|^sketch$|^augment$|^dereplicate-hood$/);
+	usage("\nError: please specify a valid command\n") if ($COMMAND !~ m/^sim$|^group$|^dereplicate$|^flank$|^extend$|^summarize$|^insert$|^cargo$|^pair-viz$|^locus-viz$|^coverage$|^genome-viz$|^format$|^format-ncbi$|^annotate$|^consolidate$|^sketch$|^augment$|^dereplicate-hood$|^liftover$/);
 }
 
