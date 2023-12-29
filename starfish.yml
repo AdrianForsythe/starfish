@@ -18,3 +18,5 @@ dependencies:
   - mmseqs2=14.7e284
   - samtools=1.6
   - eggnog-mapper=2.1.12
+  - liftoff=1.6.3
+  - ncbi-datasets-cli=16.0.0
