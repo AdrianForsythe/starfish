@@ -11,14 +11,17 @@ use File::Copy qw(move);
 use File::Path qw(make_path);
 use File::Path qw(remove_tree);
 use Cwd qw(abs_path);
-use Getopt::Long;
+use Getopt::Long qw(:config auto_abbrev no_ignore_case);
+$|=1;
+# glofish lib
+use Fishtank::Utils qw(dim_1_hash);
 
 sub usage {
 	my $message = shift;
 	my $usage = qq/
 usage: starfish liftover [args]
 
-Liftover annotations from a reference genome (downloads genome from NCBI) in order to annotate assemblies that do not have GFFs provided
+liftover annotations from a reference genome (downloads genome from NCBI) in order to annotate assemblies that do not have GFFs provided
 
 Required:
 -a, --assembly    FILE   2 column tsv: genomeID, path to assembly FASTA.
@@ -46,54 +49,42 @@ main: {
 		'h|help');
   Opts_check(\%opts);
 
-  if (!defined $opts{'assembly'}) {
-    die "Error: Assembly file must be provided.\n";
-  }
-
-  if (!defined $opts{'gff'}) {
-    die "Error: GFF file must be provided.\n";
-  }
-
-  if (!defined $opts{'reference'} || !defined $opts{'species'}) {
-    die "Error: Either the species name or NCBI accession of the reference genome must be provided.\n";
-  }
-
-  if (defined $opts{'reference'} && defined $opts{'species'}) {
-    die "Error: Cannot use species name or NCBI accession together.\n";
-  }
-
+  my @fastadb;
+  my @gffdb;
+  my $threads = 4; # TODO: there must be a global threads/cpu variable?
+  my $refgenome_gff;
+  my ($fastaFiles) = dim_1_hash(opts{'assembly'}, "\t", "0:1");
+  my ($gffFiles) = dim_1_hash(opts{'gff'}, "\t", "0:1");
   my $query;
+  my $includes = "genome,gff3,protein,cds";
 
   if (defined $opts{'species'}) {
-    # Check if the species name consists of at least two words (genus and species)
-    # Remove trailing whitespace
-    my $species_name = $opts{'species'};
-    $species_name =~ s/\s+$//;
+      # Check if the species name consists of at least two words (genus and species)
+      # Remove trailing whitespace
+      my $species_name = $opts{'species'};
+      $species_name =~ s/\s+$//;
 
-    # Check if the string consists of at least two words
-    my @words = split /\s+/, $species_name;
-    if (@words < 2) {
-      die "Error: The species name consists of at least two words (genus and species).\n";
-    } else {
-      my $query = $species_name;
-    }
+      # Check if the string consists of at least two words
+      my @words = split /\s+/, $species_name;
+      if (@words < 2) {
+          die "Error: The species name consists of at least two words (genus and species).\n";
+      } else {
+          $query = $species_name;  # Removed 'my' declaration here
+      }
   }
 
   if (defined $opts{'accession'}) {
-    my $ncbi_accession = $opts{'species'};
-    # Define the regular expression for NCBI genome assembly accession
-    my $ncbi_accession_regex =~ qr/^(GCA|GCF)\d+$/;
+      my $ncbi_accession = $opts{'accession'};  # Corrected variable name
+      # Define the regular expression for NCBI genome assembly accession
+      my $ncbi_accession_regex = qr/^(GCA|GCF)\d+$/;  # Removed '$' from variable name
 
-    # Check if the input string matches the regex
-    if ($ncbi_accession =~ $ncbi_accession_regex) {
-      my $query = $ncbi_accession;
-    } else {
-      die "Error: The input string does not match the NCBI genome assembly accession pattern.\n";
-    }
+      # Check if the input string matches the regex
+      if ($ncbi_accession =~ $ncbi_accession_regex) {
+          $query = $ncbi_accession;  # Removed 'my' declaration here
+      } else {
+          die "Error: The input string does not match the NCBI genome assembly accession pattern.\n";
+      }
   }
-
-  # Download assemblies and annotations from NCBI
-  my $includes = "genome,gff3,protein,cds";
   
   # Get the current time and date
   my ($sec, $min, $hour, $day, $mon, $year) = localtime;
@@ -105,6 +96,7 @@ main: {
   # Format the time and date as a unique string
   my $run_name = sprintf("reference_genome_%04d%02d%02d_%02d%02d%02d", $year, $mon, $day, $hour, $min, $sec);
 
+  # Download assemblies and annotations from NCBI
   # TODO: add a catch if assembly is not considered a reference genome on NCBI
   # ? the combination of these options should only ever result in a single genome returned, right? `--reference --exclude-atypical --assembly-version 'latest'`
   my $cmd;
@@ -131,10 +123,10 @@ main: {
       my @refgenome_gff = glob("$subdir/*.gff");
       my @refgenome_faa = glob("$subdir/*.faa");
 
-      # Rename files
-      rename("$subdir/cds_from_genomic.fna", "$subdir/$dir_name.cds.fna") if @refgenome_cds;
-      rename("$subdir/genomic.gff", "$subdir/$dir_name.gff") if @refgenome_gff;
-      rename("$subdir/protein.faa", "$subdir/$dir_name.faa") if @refgenome_faa;
+      # Rename files if they exist
+      rename("$subdir/cds_from_genomic.fna", "$subdir/$dir_name.cds.fna") if @refgenome_cds && -e "$subdir/cds_from_genomic.fna";
+      rename("$subdir/genomic.gff", "$subdir/$dir_name.gff") if @refgenome_gff && -e "$subdir/genomic.gff";
+      rename("$subdir/protein.faa", "$subdir/$dir_name.faa") if @refgenome_faa && -e "$subdir/protein.faa";
 
       # Print results to a TSV file
       my $output_file = "$run_name/file_list.tsv";
@@ -144,39 +136,14 @@ main: {
   }
 
   # Clean up
-  # Move files
-  move("$run_name/ncbi_dataset/*", $run_name) or die "Failed to move files: $!\n";
-
-  # Remove directories
-  remove_tree(["$run_name/ncbi_dataset*", "$run_name/README.md"]) or die "Failed to remove directories: $!\n";
-
-  my @fastadb;
-  my @gffdb;
-  my ($fastaFiles) = dim_1_hash(opts{'assembly'}, "\t", "0:1");
-  my ($gffFiles) = dim_1_hash($opts{'gff'}, "\t", "0:1");
-
-  # add new gffs to existing dir or use pwd
-  # Function to get the directory of the first non-empty path
-  sub get_directory_of_non_empty_path {
-      my %paths = @_;
-      foreach my $key (keys %paths) {
-          my $path = $paths{$key};
-          next if !$path || !-e $path;  # Skip empty or non-existent paths
-          return dirname($path);
-      }
-      return undef;  # No non-empty path found
+  # Move files if the source and destination directories exist
+  if (-d $run_name && -d $run_name) {
+      move("$run_name/ncbi_dataset/*", $run_name) or die "Failed to move files: $!\n";
   }
 
-  # Function to check if all non-empty paths have the same directory
-  sub check_all_paths_have_same_dir {
-      my ($first_dir, %paths) = @_;
-      return 0 unless defined $first_dir;
-      foreach my $key (keys %paths) {
-          my $path = $paths{$key};
-          next if !$path || !-e $path;  # Skip empty or non-existent paths
-          return 0 if dirname($path) ne $first_dir;
-      }
-      return 1;  # All non-empty paths have the same directory
+  # Remove directories if they exist
+  if (-d "$run_name/ncbi_dataset*" && -d "$run_name/README.md") {
+      remove_tree(["$run_name/ncbi_dataset*", "$run_name/README.md"]) or die "Failed to remove directories: $!\n";
   }
 
   # Get the directory of the first non-empty path
@@ -186,17 +153,15 @@ main: {
   my $all_same_dir = check_all_paths_have_same_dir($first_non_empty_dir, %{$gffFiles});
 
   my $directory;
+
   if ($all_same_dir) {
-      my $directory = $first_non_empty_dir;
+      $directory = $first_non_empty_dir;
   } else {
-      my $directory = getcwd();
+      $directory = getcwd();
   }
 
-  # TODO: there must be a global threads/cpu variable?
-  my $threads = 4;
-  my $refgenome_gff;
   # Identify keys with missing file paths
-  foreach my $fastaID (keys %$fastaFiles) {
+  foreach my $fastaID (keys %{$fastaFiles}) {
       if (!$gffFiles{$fastaID}) {
           my $liftover_gtf = "$directory/$fastaID.liftover.gff3";
           system("liftoff -p $threads -g $refgenome_gff -o $liftover_gtf $assembly $refgenome_fna");
@@ -208,5 +173,47 @@ main: {
           # add new gffs to existing gff hash and overwrite gff tsv
           $gffFiles{$fastaID} = $liftover_gtf;
       }
+  }
+}
+
+# add new gffs to existing dir or use pwd
+# Function to get the directory of the first non-empty path
+sub get_directory_of_non_empty_path {
+    my %paths = @_;
+    foreach my $key (keys %paths) {
+        my $path = $paths{$key};
+        next if !$path || !-e $path;  # Skip empty or non-existent paths
+        return dirname($path);
+    }
+    return undef;  # No non-empty path found
+}
+
+# Function to check if all non-empty paths have the same directory
+sub check_all_paths_have_same_dir {
+    my ($first_dir, %paths) = @_;
+    return 0 unless defined $first_dir;
+    foreach my $key (keys %paths) {
+        my $path = $paths{$key};
+        next if !$path || !-e $path;  # Skip empty or non-existent paths
+        return 0 if dirname($path) ne $first_dir;
+    }
+    return 1;  # All non-empty paths have the same directory
+}
+
+sub Opts_check {
+	my ($opts) = @_;
+	usage() if (exists $opts->{'h'});
+	usage("\nError: no arguments provided\n") if (scalar keys %{$opts} == 0);
+	if (defined $opts->{'gff'}) {
+		usage("\nError: the file provided to --gff does not exist\n") if (! -f $opts->{'gff'});
+	}
+	if (defined $opts->{'assembly'}) {
+		usage("\nError: the file provided to --assembly does not exist\n") if (! -f $opts->{'assembly'});
+	}
+  if (!defined $opts{'reference'} || !defined $opts{'species'}) {
+    usage("\nError: Either the species name or NCBI accession of the reference genome must be provided.\n");
+  }
+  if (defined $opts{'reference'} && defined $opts{'species'}) {
+    usage("\nError: Cannot use species name or NCBI accession together.\n");
   }
 }

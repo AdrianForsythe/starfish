@@ -49,8 +49,8 @@ Additional commands:
    format-ncbi        format ncbi assemblies and assign genomeIDs.
    dereplicate-hood   situate neighborhoods in genomic regions using
                       flanking orthologs.
-	 liftover						Liftover annotations from a reference genome (downloads genome from NCBI) 
-	 										in order to annotate assemblies that do not have GFFs provided
+   liftover           liftover annotations from a reference genome (downloads genome from NCBI) 
+                      in order to annotate assemblies that do not have GFFs provided
 
 To learn more about a command, type starfish <command> -h
 
