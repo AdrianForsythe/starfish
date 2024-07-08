@@ -216,10 +216,18 @@ hmmsearch      $opts{hmmsearchopts}\n\n";
 					
 			# find the newly predicted genes that overlap with existing genes, and those that don't, then filter by hmm hits
 			# -wao Write the original A and B entries plus the number of base pairs of overlap between the two features. A features w/o overlap are also reported with a NULL B feature and overlap = 0.
+			# sometimes, gff files have 'region' features that mess up the intersect analysis because they represent entire contigs, so make sure you only pull out the target feature of interest from the supplied gffs
 			system("rm $opts{outdir}/$opts{prefix}.intersect.gff") if (-f "$opts{outdir}/$opts{prefix}.intersect.gff"); # remove intersect file if it exists, because we print using '>>'
 			foreach my $gffFile (nsort keys %{$gffFiles}) {
-				my ($bedtoolsFailCheck) = system("bedtools intersect -a $opts{outdir}/$opts{prefix}.filt.gff -b $gffFile -wao >> $opts{outdir}/$opts{prefix}.intersect.gff");
-				if ($bedtoolsFailCheck != 0) { die "\n\n[$datestring] error: could not execute bedtools intersect on commandline for $opts{outdir}/$opts{prefix}.filt.gff and $gffFile, exiting..\n$!\n";}
+				my ($grepFailCheck) = system("grep -w $opts{'targetFeat'} $gffFile > $opts{outdir}/$opts{prefix}.temp.gff");
+				if ($grepFailCheck != 0) { die "\n\n[$datestring] error: could not execute grep on commandline for $gffFile, exiting..\n$!\n";}
+
+				if ((-f "$opts{outdir}/$opts{prefix}.temp.gff") && (! -z "$opts{outdir}/$opts{prefix}.temp.gff")) {
+					my ($bedtoolsFailCheck) = system("bedtools intersect -a $opts{outdir}/$opts{prefix}.filt.gff -b $opts{outdir}/$opts{prefix}.temp.gff -wao >> $opts{outdir}/$opts{prefix}.intersect.gff");
+					if ($bedtoolsFailCheck != 0) { die "\n\n[$datestring] error: could not execute bedtools intersect on commandline for $opts{outdir}/$opts{prefix}.filt.gff and $gffFile, exiting..\n$!\n";}
+					system("rm $opts{outdir}/$opts{prefix}.temp.gff");
+				}
+				
 			}
 			sleep(5); # to avoid issues with bedtools I/O
 			my ($idConversions) = Parse_overlap_gff("$opts{outdir}/$opts{prefix}.intersect.gff", $opts{'separator'}, $opts{'nameField'});
@@ -253,20 +261,57 @@ sub Print_overlapping_names {
 	my ($gffOUT) = Open_FH("$OUTDIR/$PREFIX.filt_intersect.gff");
 	my ($fasOUT) = Open_FH("$OUTDIR/$PREFIX.filt_intersect.fas");
 	my ($idOUT) = Open_FH("$OUTDIR/$PREFIX.filt_intersect.ids");
+	my ($conversionOUT) = Open_FH("$OUTDIR/$PREFIX.filt_intersect.new2overlap.ids");
 	my ($newCount, $oldOverlappingCount, $newOverlappingCount) = (0,0,0);
 	my $SEPprint = $SEP;
 	$SEPprint =~ s/\\//g;
 	
-	# first change any sequenceIDs in .fas, if applicable, and print
+	# load up sequences
 	my ($seqs) = Fasta_hash_nospace($filteredFas);
+
+	# sanity check: verify that none of the newly predicted genes overlap with the same existing feature
+	# if multiple new metaeuk genes overlap with the same existing feature, then the existing feature is likely better quality since it is longer
+	# however, we can't really make that decision here... so let's keep the metaeuk gene IDs in that case
+	my (%newFeatureIDs, %duplicateFeatureIDs);
 	foreach my $header (keys %{$seqs}) {
 		if (exists $idConversions->{$header}) {
 			my ($genomeID) = split/$SEP/, $header;
-			my $newHeader = "${genomeID}$SEPprint".join(":", nsort keys %{$idConversions->{$header}}); #this is where to change the character that joins up featureIDs of overlapping genes
-			print $fasOUT ">$newHeader\n$seqs->{$header}\n";
-			$oldOverlappingCount+= scalar keys %{$idConversions->{$header}};
-			$newOverlappingCount++;
-			print $idOUT "$newHeader\t$IDTAG\n"; # print out a geneID to idtag mapping file 
+			my @features = nsort keys %{$idConversions->{$header}};
+			my $firstFeature = shift @features;
+			my $newHeader = "${genomeID}$SEPprint${firstFeature}";
+			if (not exists $newFeatureIDs{$newHeader}) {
+				$newFeatureIDs{$newHeader} = 1;
+			} else {
+				$duplicateFeatureIDs{$newHeader} = 1;
+			}
+		}
+	}
+	
+	# change any sequenceIDs in .fas, if applicable, and print	
+	foreach my $header (keys %{$seqs}) {
+		if (exists $idConversions->{$header}) {
+			my ($genomeID) = split/$SEP/, $header;
+			
+			# original code where features were concatenated; however, this led to confusion and headaches down the road
+			#my $newHeader = "${genomeID}$SEPprint".join(":", nsort keys %{$idConversions->{$header}}); #this is where to change the character that joins up featureIDs of overlapping genes
+			
+			# instead, keep only the first feature (if multiple)
+			my @features = nsort keys %{$idConversions->{$header}};
+			my $firstFeature = shift @features;
+			my $newHeader = "${genomeID}$SEPprint${firstFeature}";
+			
+			# check that this new header (i.e., the original geneID in the user supplied annotation file) is unique
+			if (not exists $duplicateFeatureIDs{$newHeader}) {
+				print $fasOUT ">$newHeader\n$seqs->{$header}\n";
+				$oldOverlappingCount+= scalar keys %{$idConversions->{$header}};
+				$newOverlappingCount++;
+				print $idOUT "$newHeader\t$IDTAG\n"; # print out a geneID to idtag mapping file
+				print $conversionOUT "$header\t${newHeader}\n";
+			} else { # otherwise, keep the metaeukID
+				print $fasOUT ">$header\n$seqs->{$header}\n";
+				$newCount++;
+				print $idOUT "$header\t$IDTAG\n"; # print out a geneID to idtag mapping file
+			}
 		} else {
 			print $fasOUT ">$header\n$seqs->{$header}\n";
 			print $idOUT "$header\t$IDTAG\n"; # print out a geneID to idtag mapping file 
@@ -280,14 +325,27 @@ sub Print_overlapping_names {
 		next if ($line =~ m/^#/);
 		chomp $line;
 		my ($contigID, $annotator, $featureType, $begin, $end, $NULL1, $strand, $NULL2, $info) = split("\t", $line);
-		next if ($featureType ne $TARGETFEAT); # only parse IDTAG features
+		next if ($featureType ne $TARGETFEAT); # only parse featureType features
 		my ($otherInfo, $metaInfo) = split/;/, $info;
 		$metaInfo =~ m/$NAMEFIELD(.+)$/;
 		my $metaSeqID = $1;
 		if (exists $idConversions->{$metaSeqID}) { 
 			my ($genomeID) = split/$SEP/, $metaSeqID;
-			my $newHeader = "${genomeID}$SEPprint".join(":", nsort keys %{$idConversions->{$metaSeqID}}); #this is where to change the character that joins up featureIDs of overlapping genes
-			print $gffOUT join("\t", $contigID, $annotator, $featureType, $begin, $end, $NULL1, $strand, $NULL2, $otherInfo).";${NAMEFIELD}$newHeader\n";
+
+			# original code where features were concatenated; however, this led to confusion and headaches down the road			
+			#my $newHeader = "${genomeID}$SEPprint".join(":", nsort keys %{$idConversions->{$metaSeqID}}); #this is where to change the character that joins up featureIDs of overlapping genes
+
+			# instead, keep only the first feature (if multiple)
+			my @features = nsort keys %{$idConversions->{$metaSeqID}};
+			my $firstFeature = shift @features;
+			my $newHeader = "${genomeID}$SEPprint${firstFeature}";
+
+			# check that this new header is unique
+			if (not exists $duplicateFeatureIDs{$newHeader}) {
+				print $gffOUT join("\t", $contigID, $annotator, $featureType, $begin, $end, $NULL1, $strand, $NULL2, $otherInfo).";${NAMEFIELD}$newHeader\n";
+			} else { # otherwise, keep the metaeukID info
+				print $gffOUT "$line\n";
+			}
 		} else {
 			print $gffOUT "$line\n";
 		}
@@ -304,7 +362,8 @@ sub Parse_overlap_gff {
 		chomp $line;
 		#DK180_Scaffold1	MetaEuk	gene	222642	225282	1038	+	.	Target_ID=sodalk2_346302;Name=DK180_TYR01301	DK180_Scaffold1	GLEAN	gene	222642	223415	.	+	.	ID=DK180_V000059;Name=DK180_V000059	774
 		my ($metaContig, $metaMeta, $metaFeat, $metaStart, $metaEnd, $metaNA1, $metaStrand, $metaNA2, $metaInfo, $predContig, $predMeth, $predFeat, $predStart, $predEnd, $predNA1, $predStrand, $predNA2, $predInfo, $overlap) = split/\t/, $line;
-		if ($overlap > 0) { 
+		
+		if ((defined $overlap) && ($overlap > 0)) { 
 			$metaInfo = "\t$metaInfo"; # for helping with regex parsing
 			$metaInfo =~ m/[;\t]$NAMEFIELD([^\t]+)/;
 			my $metaSeqID = $1;
@@ -329,6 +388,7 @@ sub Print_filtered_hmm_hits {
 	my ($gffOUT) = Open_FH("$OUTDIR/$PREFIX.filt.gff");
 	my ($fasOUT) = Open_FH("$OUTDIR/$PREFIX.filt.fas");
 	my ($idOUT) = Open_FH("$OUTDIR/$PREFIX.filt.ids");
+	my ($conversionOUT) = Open_FH("$OUTDIR/$PREFIX.filt.old2new.ids");
 	my $SEPprint = $SEP;
 	$SEPprint =~ s/\\//g;
 	
@@ -353,7 +413,9 @@ sub Print_filtered_hmm_hits {
 		# DK051-Scaffold13	MetaEuk	CDS	20313	20639	90	-	.	Target_ID=consp.1_660283;TCS_ID=consp.1_660283|DK051-Scaffold13|-|94211_CDS;Parent=consp.1_660283|DK051-Scaffold13|-|94211_exon
 
 		my ($contigID, $source, $featureType, $begin, $end, $NULL1, $strand, $NULL2, $info) = split("\t", $line);
+		
 		next if ($featureType ne 'gene'); # only parse gene features from the metaeuk file so you can correctly parse the sequence ID
+		
 		my ($otherInfo, $metaeukID) = split/;/, $info;
 		$metaeukID =~ s/TCS_ID=//;
 		$metaeukID =~ s/\|\d+$//;
@@ -371,6 +433,7 @@ sub Print_filtered_hmm_hits {
 			print $gffOUT join("\t", $contigID, $source, $TARGETFEAT, $begin, $end, $NULL1, $strand, $NULL2, $otherInfo).";$NAMEFIELD${newSeqID}\n";
 			print $fasOUT ">$newSeqID\n$renamedSeqs{$metaeukID}\n";
 			print $idOUT "$newSeqID\t$TAG\n";
+			print $conversionOUT "$metaeukID\t$newSeqID\n";
 		}
 	}
 	return($newGeneCounter);
@@ -452,8 +515,6 @@ sub Opts_check {
 		#	shouldn't be an issue for use because we do a search per genome, never expect more than 300 copies of a given gene per genome
 		$opts->{'metaeukopts'} = '-v 3 -s 7.5 -e 0.0001 --max-intron 2000 --max-seqs 300 --metaeuk-eval 0.001 --exhaustive-search 1 --metaeuk-tcov 0.25 --allow-deletion 1 --protein 1 --disk-space-limit 100G --compressed 1';
 	}
-
-
 	if (not defined $opts->{'hmmsearchopts'}) {
 		# hmmsearch paramters
 		#  --max    : Turn all heuristic filters off (less speed, more power)
