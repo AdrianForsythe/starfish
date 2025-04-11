@@ -42,6 +42,12 @@ Required, with defaults:
                          (default: \\'-ax sr\\')
 --strobeopts      STR    options to pass to strobealign
                          (default: \\'-N 0 -U\\')
+--filter          FLAG   filter BAM files before coverage calculation
+                         (default: off)
+--mapq            INT    minimum mapping quality for filtered reads
+                         (default: 10)
+--flags           STR    SAM flags to filter, comma-separated
+                         (default: 'F4,F256')
 
 Optional:
 -c, --clean       STR    remove all intermediate mapping files
@@ -72,6 +78,9 @@ main: {
 		'mindepth|d=i',
 		'minimapopts=s',
 		'strobeopts=s',
+		'filter!',
+		'mapq=i',
+		'flags=s',
 		'clean|c',
 		'h|help');
 	Opts_check(\%opts);
@@ -139,14 +148,20 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 	}
 
 	my @current_batch;
+	my %safe_names;  # Store mapping between original and safe names
 	
 	foreach my $seqID (keys %{$elementLib}) {
-		my $seq_file = "$temp_dir/$seqID.fa";
+		# Create a safe filename by replacing problematic characters
+		my $safe_id = $seqID;
+		$safe_id =~ s/[^a-zA-Z0-9._-]/_/g;  # Replace any non-alphanumeric chars with underscore
+		$safe_names{$safe_id} = $seqID;  # Store mapping
+		
+		my $seq_file = "$temp_dir/$safe_id.fa";
 		open(my $SEQ_OUT, '>', $seq_file) or die "Could not open $seq_file for writing: $!";
-		print $SEQ_OUT ">$seqID\n$elementLib->{$seqID}\n";
+		print $SEQ_OUT ">$seqID\n$elementLib->{$seqID}\n";  # Use original seqID in fasta header
 		close $SEQ_OUT;
 		
-		push @current_batch, $seqID;
+		push @current_batch, $safe_id;  # Store safe_id in batch
 		if (scalar(@current_batch) >= $batch_size) {
 			push @seq_batches, [@current_batch];
 			@current_batch = ();
@@ -210,8 +225,16 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 						}
 						
 						# Process SAM file
-						system("samtools view -@ $threads_per_process -S -b $seq_output.sam 1>$seq_output.temp.bam 2>/dev/null") == 0
-							or exit 1;
+						if ($opts{'filter'}) {
+							# Convert SAM to BAM with filtering
+							system("samtools view -@ $threads_per_process -S -b -q $opts{mapq} $opts{filter_flags} $seq_output.sam 1>$seq_output.temp.bam 2>/dev/null") == 0
+								or exit 1;
+						} else {
+							# Convert SAM to BAM without filtering
+							system("samtools view -@ $threads_per_process -S -b $seq_output.sam 1>$seq_output.temp.bam 2>/dev/null") == 0
+								or exit 1;
+						}
+						
 						system("samtools sort -@ $threads_per_process $seq_output.temp.bam 1>$seq_output.bam 2>/dev/null") == 0
 							or exit 1;
 						system("bedtools genomecov -ibam $seq_output.bam -d 1>$seq_output.temp.cov 2>/dev/null") == 0
@@ -230,8 +253,9 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 				}
 				
 				# Process results for this batch
-				foreach my $seqID (@$batch) {
-					my $seq_output = "$outputFilePrefix.$seqID";
+				foreach my $safe_id (@$batch) {
+					my $seqID = $safe_names{$safe_id};  # Get original seqID
+					my $seq_output = "$outputFilePrefix.$safe_id";
 					
 					# Process coverage data
 					my ($total_depth, $covered_positions) = (0, 0);
@@ -308,6 +332,17 @@ sub Opts_check {
 	if (not defined $opts->{'threads'}) {
 		$opts->{'threads'} = 1;
 	}
+	
+	if (not defined $opts->{'mapq'}) {
+		$opts->{'mapq'} = 10;
+	}
+	if (not defined $opts->{'flags'}) {
+		$opts->{'flags'} = 'F4,F256';
+	}
+	
+	# Convert flags string to samtools format
+	my $filter_flags = join(' ', map { "-$_" } split(',', $opts->{'flags'}));
+	$opts->{'filter_flags'} = $filter_flags;
 	
 	# Warn if total threads is less than batch size
 	if ($opts->{'threads'} < $opts->{'batch_size'}) {
