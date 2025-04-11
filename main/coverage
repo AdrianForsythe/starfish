@@ -168,11 +168,11 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 		
 			# convert SAM to sorted BAM
 			$datestring = localtime();
-			my ($samtoolsCheck1) = system("samtools view -S -b $outputFilePrefix.sam 1>$outputFilePrefix.temp.bam 2>/dev/null");
+			my ($samtoolsCheck1) = system("samtools view -@ $opts{threads} -S -b $outputFilePrefix.sam 1>$outputFilePrefix.temp.bam 2>/dev/null");
 			if ($samtoolsCheck1 != 0) { die "\n\n[$datestring] error: could not execute samtools view on commandline for $genomeID, exiting..\n$!\n";}
 			
 			$datestring = localtime();
-			my ($samtoolsCheck2) = system("samtools sort $outputFilePrefix.temp.bam 1>$outputFilePrefix.bam 2>/dev/null");
+			my ($samtoolsCheck2) = system("samtools sort -@ $opts{threads} $outputFilePrefix.temp.bam 1>$outputFilePrefix.bam 2>/dev/null");
 			if ($samtoolsCheck2 != 0) { die "\n\n[$datestring] error: could not execute samtools sort on commandline for $genomeID, exiting..\n$!\n";}
 
 			# clean up sam
