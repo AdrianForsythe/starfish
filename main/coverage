@@ -112,6 +112,18 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 	#### MAP READS AND CALCULATE COVERAGE ####
 	##########################################
 	
+	# Create temporary directory for individual fasta files
+	my $temp_dir = "$opts{outdir}/$opts{prefix}.temp";
+	mkdir $temp_dir unless -d $temp_dir;
+
+	# Write each sequence to a separate fasta file
+	foreach my $seqID (keys %{$elementLib}) {
+		my $seq_file = "$temp_dir/$seqID.fa";
+		open(my $SEQ_OUT, '>', $seq_file) or die "Could not open $seq_file for writing: $!";
+		print $SEQ_OUT ">$seqID\n$elementLib->{$seqID}\n";
+		close $SEQ_OUT;
+	}
+	
 	# also convert to bam to save on space
 	$datestring = localtime();
 	print "[$datestring] executing $opts{mode} mapping with $opts{aligner} for ".scalar(%{$ome2forward})." samples..\n";
@@ -131,88 +143,69 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 				print "[$datestring] warning: can't find read file $ome2reverse->{$genomeID}, skipping read mapping and coverage calculations for $genomeID\n";
 				next;
 			}
-			
-			
-			if ($opts{'aligner'} eq 'minimap2') {
-	
-				if ($opts{'mode'} eq 'single') {
-			
-					# single-end alignment
-					my ($minimapCheck) = system("minimap2 -t $opts{threads} $opts{minimapopts} $opts{lib} $ome2forward->{$genomeID} 1>$outputFilePrefix.sam 2>/dev/null");
-					if ($minimapCheck != 0) { die "\n\n[$datestring] error: could not execute minimap2 on commandline for $genomeID, exiting..\n$!\n";}
 
-				} elsif ($opts{'mode'} eq 'paired') {
-
-					# paired-end alignment	
-					my ($minimapCheck) = system("minimap2 -t $opts{threads} $opts{minimapopts} $opts{lib} $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$outputFilePrefix.sam 2>/dev/null");
-					if ($minimapCheck != 0) { die "\n\n[$datestring] error: could not execute minimap2 on commandline for $genomeID, exiting..\n$!\n";}
-
-				}
-			} elsif ($opts{'aligner'} eq 'strobealign') {
-
-				if ($opts{'mode'} eq 'single') {
-			
-					# single-end alignment
-					my ($strobealignCheck) = system("strobealign --no-progress -t $opts{threads} $opts{strobeopts} $opts{lib} $ome2forward->{$genomeID} 1>$outputFilePrefix.sam 2>/dev/null");
-					if ($strobealignCheck != 0) { die "\n\n[$datestring] error: could not execute strobealign on commandline for $genomeID, exiting..\n$!\n";}
-
-				} elsif ($opts{'mode'} eq 'paired') {
-
-					# paired-end alignment	
-					my ($strobealignCheck) = system("strobealign --no-progress -t $opts{threads} $opts{strobeopts} $opts{lib} $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$outputFilePrefix.sam 2>/dev/null");
-					if ($strobealignCheck != 0) { die "\n\n[$datestring] error: could not execute strobealign on commandline for $genomeID, exiting..\n$!\n";}
-
-				}
-	
-			}
-		
-			# convert SAM to sorted BAM
-			$datestring = localtime();
-			my ($samtoolsCheck1) = system("samtools view -@ $opts{threads} -S -b $outputFilePrefix.sam 1>$outputFilePrefix.temp.bam 2>/dev/null");
-			if ($samtoolsCheck1 != 0) { die "\n\n[$datestring] error: could not execute samtools view on commandline for $genomeID, exiting..\n$!\n";}
-			
-			$datestring = localtime();
-			my ($samtoolsCheck2) = system("samtools sort -@ $opts{threads} $outputFilePrefix.temp.bam 1>$outputFilePrefix.bam 2>/dev/null");
-			if ($samtoolsCheck2 != 0) { die "\n\n[$datestring] error: could not execute samtools sort on commandline for $genomeID, exiting..\n$!\n";}
-
-			# clean up sam
-			system("rm $outputFilePrefix.sam $outputFilePrefix.temp.bam");
-			
-			# calculate coverage
-			$datestring = localtime();
-			my ($bedtoolsCheck) = system("bedtools genomecov -ibam $outputFilePrefix.bam -d 1>$outputFilePrefix.temp.cov 2>/dev/null");
-			if ($bedtoolsCheck != 0) { die "\n\n[$datestring] error: could not execute bedtools genomecov on commandline for $genomeID, exiting..\n$!\n";}
-			
-			# summarize % coverage and avg depth per sequence
-			my (%seq2cov, %seq2depth);
-			$datestring = localtime();
-			open(my $COVIN, '<', "$outputFilePrefix.temp.cov") or usage("[$datestring] error: could not open $outputFilePrefix.temp.cov for reading\n");
-			while (my $line = <$COVIN>) {
-				chomp $line;
-				my ($seqID, $pos, $depth) = split/\t/, $line;
-				if ($depth >= $opts{'mindepth'}) {
-					$seq2depth{$seqID}+=$depth; # only sum depth at sites >= mindepth
-					$seq2cov{$seqID}++;
-				}
-			}
-
-			# print summary	per sequence in the elementLib file
+			# Initialize coverage output file
 			my ($OUT) = Open_FH("$outputFilePrefix.cov");
 			print $OUT "#sampleID\telementID\telementLength\tfracCov\tavgDepth\n";
-			foreach my $seqID (nsort keys %{$elementLib}) {
-				my ($perCov, $avgDepth) = (0,0);
-				my $elementLength = length($elementLib->{$seqID});
-				
-				if (exists $seq2cov{$seqID}) {
-					$perCov = sprintf("%.3f", $seq2cov{$seqID} / $elementLength);
-					$avgDepth = sprintf("%.3f", $seq2depth{$seqID} / $elementLength);
-				}
-				print $OUT "$genomeID\t$seqID\t$elementLength\t$perCov\t$avgDepth\n";
-			}
 			
-			# remove .bam, if --clean 
-			system("rm $outputFilePrefix.temp.cov");
-			system("rm $outputFilePrefix.bam") if (defined $opts{'clean'});
+			# Process each sequence separately
+			foreach my $seqID (nsort keys %{$elementLib}) {
+				my $seq_file = "$temp_dir/$seqID.fa";
+				my $seq_output = "$outputFilePrefix.$seqID";
+				
+				if ($opts{'aligner'} eq 'minimap2') {
+					if ($opts{'mode'} eq 'single') {
+						my ($minimapCheck) = system("minimap2 -t $opts{threads} $opts{minimapopts} $seq_file $ome2forward->{$genomeID} 1>$seq_output.sam 2>/dev/null");
+						if ($minimapCheck != 0) { die "\n\n[$datestring] error: could not execute minimap2 on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+					} elsif ($opts{'mode'} eq 'paired') {
+						my ($minimapCheck) = system("minimap2 -t $opts{threads} $opts{minimapopts} $seq_file $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$seq_output.sam 2>/dev/null");
+						if ($minimapCheck != 0) { die "\n\n[$datestring] error: could not execute minimap2 on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+					}
+				} elsif ($opts{'aligner'} eq 'strobealign') {
+					if ($opts{'mode'} eq 'single') {
+						my ($strobealignCheck) = system("strobealign --no-progress -t $opts{threads} $opts{strobeopts} $seq_file $ome2forward->{$genomeID} 1>$seq_output.sam 2>/dev/null");
+						if ($strobealignCheck != 0) { die "\n\n[$datestring] error: could not execute strobealign on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+					} elsif ($opts{'mode'} eq 'paired') {
+						my ($strobealignCheck) = system("strobealign --no-progress -t $opts{threads} $opts{strobeopts} $seq_file $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$seq_output.sam 2>/dev/null");
+						if ($strobealignCheck != 0) { die "\n\n[$datestring] error: could not execute strobealign on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+					}
+				}
+				
+				# Convert SAM to sorted BAM
+				my ($samtoolsCheck1) = system("samtools view -@ $opts{threads} -S -b $seq_output.sam 1>$seq_output.temp.bam 2>/dev/null");
+				if ($samtoolsCheck1 != 0) { die "\n\n[$datestring] error: could not execute samtools view on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+				
+				my ($samtoolsCheck2) = system("samtools sort -@ $opts{threads} $seq_output.temp.bam 1>$seq_output.bam 2>/dev/null");
+				if ($samtoolsCheck2 != 0) { die "\n\n[$datestring] error: could not execute samtools sort on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+
+				# Calculate coverage
+				my ($bedtoolsCheck) = system("bedtools genomecov -ibam $seq_output.bam -d 1>$seq_output.temp.cov 2>/dev/null");
+				if ($bedtoolsCheck != 0) { die "\n\n[$datestring] error: could not execute bedtools genomecov on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+				
+				# Process coverage data
+				my ($total_depth, $covered_positions) = (0, 0);
+				open(my $COVIN, '<', "$seq_output.temp.cov") or die "Could not open $seq_output.temp.cov: $!";
+				while (my $line = <$COVIN>) {
+					chomp $line;
+					my ($seq, $pos, $depth) = split/\t/, $line;
+					if ($depth >= $opts{'mindepth'}) {
+						$total_depth += $depth;
+						$covered_positions++;
+					}
+				}
+				close $COVIN;
+
+				# Calculate and write coverage statistics
+				my $elementLength = length($elementLib->{$seqID});
+				my $perCov = sprintf("%.3f", $covered_positions / $elementLength);
+				my $avgDepth = sprintf("%.3f", $total_depth / $elementLength);
+				print $OUT "$genomeID\t$seqID\t$elementLength\t$perCov\t$avgDepth\n";
+
+				# Clean up intermediate files
+				unlink("$seq_output.sam", "$seq_output.temp.bam", "$seq_output.temp.cov");
+				unlink("$seq_output.bam") if (defined $opts{'clean'});
+			}
+			close $OUT;
 			
 		} else {
 			my $datestring = localtime();
@@ -220,6 +213,9 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 		}
 	}
 	
+	# Clean up temporary directory
+	system("rm -rf $temp_dir");
+
 	$datestring = localtime();
 	print "[$datestring] done\n";
 
