@@ -22,7 +22,9 @@ Required:
 -m, --mode        STR    read library type, either 'paired' or 'single'.
 -r, --reads       FILE   2 or 3-column tsv: sampleID, read fastq1, read fastq2 if
                          --mode paired
--l, --lib         FILE   nucleotide fasta file of full length reference elements.
+-l, --lib         FILE   nucleotide fasta file of full length reference element(s). 
+                         Individual mapping jobs will be launches for each sequence 
+												 in the fasta file.
 -x, --prefix      STR    prefix for naming all output files.
 -o, --outdir      DIR    output directory.
 
@@ -31,7 +33,10 @@ Required, with defaults:
                          (default: 5)
 -a, --aligner     STR    alignment software to use, 'minimap2' or 'strobealign'
                          (default: strobealign)
--T, --threads     INT    number of threads.
+-B, --batch_size  INT    number of sequences to process in parallel.
+                         (default: 10)
+-T, --threads     INT    number of threads to use for alignment and samtools jobs.
+												 threads will be distributed evenly across processes.
                          (default: 1)
 --minimapopts     STR    options to pass to minimap2
                          (default: \\'-ax sr\\')
@@ -63,6 +68,7 @@ main: {
 		'outdir|o=s',
 		'aligner|a=s',
 		'threads|T=i',
+		'batch_size|B=i',
 		'mindepth|d=i',
 		'minimapopts=s',
 		'strobeopts=s',
@@ -116,25 +122,47 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 	my $temp_dir = "$opts{outdir}/$opts{prefix}.temp";
 	mkdir $temp_dir unless -d $temp_dir;
 
-	# Write each sequence to a separate fasta file
+	# Write each sequence to a separate fasta file and prepare batch processing
+	my @seq_batches;
+	my $batch_size = $opts{'batch_size'} // 10;  # Default to 10 if not specified
+	my $threads = $opts{'threads'} // 1;  # Default to 1 if not specified
+	my $threads_per_process = int($threads / $batch_size);
+	$threads_per_process = 1 if $threads_per_process < 1;  # Ensure at least 1 thread per process
+	
+	# Warn if threads aren't evenly distributed
+	if ($opts{'threads'} > $batch_size && ($opts{'threads'} % $batch_size) != 0) {
+		print "Warning: $opts{'threads'} threads cannot be evenly divided among $batch_size processes.\n",
+			  "Using $threads_per_process thread(s) per process ",
+			  "($opts{'threads'} - ", ($opts{'threads'} % $batch_size), " threads will be unused).\n";
+	} else {
+		print "Running with $batch_size parallel processes, $threads_per_process thread(s) each\n";
+	}
+
+	my @current_batch;
+	
 	foreach my $seqID (keys %{$elementLib}) {
 		my $seq_file = "$temp_dir/$seqID.fa";
 		open(my $SEQ_OUT, '>', $seq_file) or die "Could not open $seq_file for writing: $!";
 		print $SEQ_OUT ">$seqID\n$elementLib->{$seqID}\n";
 		close $SEQ_OUT;
+		
+		push @current_batch, $seqID;
+		if (scalar(@current_batch) >= $batch_size) {
+			push @seq_batches, [@current_batch];
+			@current_batch = ();
+		}
 	}
+	push @seq_batches, [@current_batch] if @current_batch; # Add remaining sequences
 	
 	# also convert to bam to save on space
 	$datestring = localtime();
 	print "[$datestring] executing $opts{mode} mapping with $opts{aligner} for ".scalar(%{$ome2forward})." samples..\n";
 
 	foreach my $genomeID (nsort keys %{$ome2forward}) {
-		
 		$datestring = localtime();
 		my $outputFilePrefix = "$opts{outdir}/$opts{prefix}.$genomeID";
 		
 		if (! -f "$outputFilePrefix.cov") {
-			
 			if (! -f "$ome2forward->{$genomeID}") {
 				print "[$datestring] warning: can't find read file $ome2forward->{$genomeID}, skipping read mapping and coverage calculations for $genomeID\n";
 				next;
@@ -148,62 +176,86 @@ strobealign            $opts{strobeopts} -t $opts{threads}\n\n";
 			my ($OUT) = Open_FH("$outputFilePrefix.cov");
 			print $OUT "#sampleID\telementID\telementLength\tfracCov\tavgDepth\n";
 			
-			# Process each sequence separately
-			foreach my $seqID (nsort keys %{$elementLib}) {
-				my $seq_file = "$temp_dir/$seqID.fa";
-				my $seq_output = "$outputFilePrefix.$seqID";
+			# Process sequences in batches
+			foreach my $batch (@seq_batches) {
+				my @pids;
 				
-				if ($opts{'aligner'} eq 'minimap2') {
-					if ($opts{'mode'} eq 'single') {
-						my ($minimapCheck) = system("minimap2 -t $opts{threads} $opts{minimapopts} $seq_file $ome2forward->{$genomeID} 1>$seq_output.sam 2>/dev/null");
-						if ($minimapCheck != 0) { die "\n\n[$datestring] error: could not execute minimap2 on commandline for $genomeID:$seqID, exiting..\n$!\n";}
-					} elsif ($opts{'mode'} eq 'paired') {
-						my ($minimapCheck) = system("minimap2 -t $opts{threads} $opts{minimapopts} $seq_file $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$seq_output.sam 2>/dev/null");
-						if ($minimapCheck != 0) { die "\n\n[$datestring] error: could not execute minimap2 on commandline for $genomeID:$seqID, exiting..\n$!\n";}
-					}
-				} elsif ($opts{'aligner'} eq 'strobealign') {
-					if ($opts{'mode'} eq 'single') {
-						my ($strobealignCheck) = system("strobealign --no-progress -t $opts{threads} $opts{strobeopts} $seq_file $ome2forward->{$genomeID} 1>$seq_output.sam 2>/dev/null");
-						if ($strobealignCheck != 0) { die "\n\n[$datestring] error: could not execute strobealign on commandline for $genomeID:$seqID, exiting..\n$!\n";}
-					} elsif ($opts{'mode'} eq 'paired') {
-						my ($strobealignCheck) = system("strobealign --no-progress -t $opts{threads} $opts{strobeopts} $seq_file $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$seq_output.sam 2>/dev/null");
-						if ($strobealignCheck != 0) { die "\n\n[$datestring] error: could not execute strobealign on commandline for $genomeID:$seqID, exiting..\n$!\n";}
+				# Fork processes for each sequence in the batch
+				foreach my $seqID (@$batch) {
+					my $pid = fork();
+					
+					if (!defined $pid) {
+						die "Could not fork: $!";
+					} elsif ($pid == 0) { # Child process
+						my $seq_file = "$temp_dir/$seqID.fa";
+						my $seq_output = "$outputFilePrefix.$seqID";
+						
+						# Run alignment
+						if ($opts{'aligner'} eq 'minimap2') {
+							if ($opts{'mode'} eq 'single') {
+								system("minimap2 -t $threads_per_process $opts{minimapopts} $seq_file $ome2forward->{$genomeID} 1>$seq_output.sam 2>/dev/null") == 0
+									or exit 1;
+							} elsif ($opts{'mode'} eq 'paired') {
+								system("minimap2 -t $threads_per_process $opts{minimapopts} $seq_file $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$seq_output.sam 2>/dev/null") == 0
+									or exit 1;
+							}
+						} elsif ($opts{'aligner'} eq 'strobealign') {
+							if ($opts{'mode'} eq 'single') {
+								system("strobealign --no-progress -t $threads_per_process $opts{strobeopts} $seq_file $ome2forward->{$genomeID} 1>$seq_output.sam 2>/dev/null") == 0
+									or exit 1;
+							} elsif ($opts{'mode'} eq 'paired') {
+								system("strobealign --no-progress -t $threads_per_process $opts{strobeopts} $seq_file $ome2forward->{$genomeID} $ome2reverse->{$genomeID} 1>$seq_output.sam 2>/dev/null") == 0
+									or exit 1;
+							}
+						}
+						
+						# Process SAM file
+						system("samtools view -@ $threads_per_process -S -b $seq_output.sam 1>$seq_output.temp.bam 2>/dev/null") == 0
+							or exit 1;
+						system("samtools sort -@ $threads_per_process $seq_output.temp.bam 1>$seq_output.bam 2>/dev/null") == 0
+							or exit 1;
+						system("bedtools genomecov -ibam $seq_output.bam -d 1>$seq_output.temp.cov 2>/dev/null") == 0
+							or exit 1;
+						
+						exit 0; # Child process exits
+					} else { # Parent process
+						push @pids, $pid;
 					}
 				}
 				
-				# Convert SAM to sorted BAM
-				my ($samtoolsCheck1) = system("samtools view -@ $opts{threads} -S -b $seq_output.sam 1>$seq_output.temp.bam 2>/dev/null");
-				if ($samtoolsCheck1 != 0) { die "\n\n[$datestring] error: could not execute samtools view on commandline for $genomeID:$seqID, exiting..\n$!\n";}
-				
-				my ($samtoolsCheck2) = system("samtools sort -@ $opts{threads} $seq_output.temp.bam 1>$seq_output.bam 2>/dev/null");
-				if ($samtoolsCheck2 != 0) { die "\n\n[$datestring] error: could not execute samtools sort on commandline for $genomeID:$seqID, exiting..\n$!\n";}
-
-				# Calculate coverage
-				my ($bedtoolsCheck) = system("bedtools genomecov -ibam $seq_output.bam -d 1>$seq_output.temp.cov 2>/dev/null");
-				if ($bedtoolsCheck != 0) { die "\n\n[$datestring] error: could not execute bedtools genomecov on commandline for $genomeID:$seqID, exiting..\n$!\n";}
-				
-				# Process coverage data
-				my ($total_depth, $covered_positions) = (0, 0);
-				open(my $COVIN, '<', "$seq_output.temp.cov") or die "Could not open $seq_output.temp.cov: $!";
-				while (my $line = <$COVIN>) {
-					chomp $line;
-					my ($seq, $pos, $depth) = split/\t/, $line;
-					if ($depth >= $opts{'mindepth'}) {
-						$total_depth += $depth;
-						$covered_positions++;
-					}
+				# Wait for all processes in this batch to complete
+				foreach my $pid (@pids) {
+					waitpid($pid, 0);
+					die "A child process failed" if $? != 0;
 				}
-				close $COVIN;
+				
+				# Process results for this batch
+				foreach my $seqID (@$batch) {
+					my $seq_output = "$outputFilePrefix.$seqID";
+					
+					# Process coverage data
+					my ($total_depth, $covered_positions) = (0, 0);
+					open(my $COVIN, '<', "$seq_output.temp.cov") or die "Could not open $seq_output.temp.cov: $!";
+					while (my $line = <$COVIN>) {
+						chomp $line;
+						my ($seq, $pos, $depth) = split/\t/, $line;
+						if ($depth >= $opts{'mindepth'}) {
+							$total_depth += $depth;
+							$covered_positions++;
+						}
+					}
+					close $COVIN;
 
-				# Calculate and write coverage statistics
-				my $elementLength = length($elementLib->{$seqID});
-				my $perCov = sprintf("%.3f", $covered_positions / $elementLength);
-				my $avgDepth = sprintf("%.3f", $total_depth / $elementLength);
-				print $OUT "$genomeID\t$seqID\t$elementLength\t$perCov\t$avgDepth\n";
+					# Calculate and write coverage statistics
+					my $elementLength = length($elementLib->{$seqID});
+					my $perCov = sprintf("%.3f", $covered_positions / $elementLength);
+					my $avgDepth = sprintf("%.3f", $total_depth / $elementLength);
+					print $OUT "$genomeID\t$seqID\t$elementLength\t$perCov\t$avgDepth\n";
 
-				# Clean up intermediate files
-				unlink("$seq_output.sam", "$seq_output.temp.bam", "$seq_output.temp.cov");
-				unlink("$seq_output.bam") if (defined $opts{'clean'});
+					# Clean up intermediate files
+					unlink("$seq_output.sam", "$seq_output.temp.bam", "$seq_output.temp.cov");
+					unlink("$seq_output.bam") if (defined $opts{'clean'});
+				}
 			}
 			close $OUT;
 			
@@ -254,6 +306,11 @@ sub Opts_check {
 		$opts->{'mindepth'} = 5;
 	}
 	if (not defined $opts->{'threads'}) {
-		$opts->{'threads'} = '1';
+		$opts->{'threads'} = 1;
+	}
+	
+	# Warn if total threads is less than batch size
+	if ($opts->{'threads'} < $opts->{'batch_size'}) {
+		print "Warning: Number of threads ($opts->{'threads'}) is less than batch size ($opts->{'batch_size'}). Each process will use 1 thread.\n";
 	}
 }
